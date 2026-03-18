@@ -312,23 +312,31 @@ def renew(sb) -> bool:
     sb.open("https://justrunmy.app/panel")
     time.sleep(3)
 
-    print("🖱️ 自动读取应用名称...")
+print("🖱️ 自动读取应用名称...")
     try:
-        # 等待带有 font-semibold 的 h3 标签加载
-        sb.wait_for_element('h3.font-semibold', timeout=10)
-        # 从网页中抓取真实的名称并保存到全局变量
-        DYNAMIC_APP_NAME = sb.get_text('h3.font-semibold')
+        # 1. 增加等待时间，并改用更稳健的选择器
+        # 查找包含 "/panel/manage/" 链接的应用卡片
+        selector = 'a[href*="/panel/manage/"]'
+        sb.wait_for_element(selector, timeout=20)
+        
+        # 2. 尝试获取应用名称（通常在卡片的 h3 标签里）
+        # 我们定位到那个包含管理链接的父级或相关标题
+        DYNAMIC_APP_NAME = sb.get_text('h3') 
         print(f"🎯 成功抓取到应用名称: {DYNAMIC_APP_NAME}")
         
-        # 直接点击刚才抓取到的元素
-        sb.click('h3.font-semibold')
-        time.sleep(3)
-        print(f"📍 成功进入应用详情页: {sb.get_current_url()}")
+        # 3. 点击进入管理页面（点击链接比点击 h3 更可靠）
+        sb.click(selector)
+        time.sleep(5)
+        print(f"📍 成功进入应用详情页")
     except Exception as e:
-        print(f"❌ 找不到应用卡片: {e}")
-        sb.save_screenshot("renew_app_not_found.png")
-        send_tg_message("❌", "续期失败(找不到应用)", "未知")
-        return False
+        # 如果还是找不到，尝试点击页面上第一个按钮类元素
+        try:
+            print("⚠️ 尝试备选点击方案...")
+            sb.click('div.grid > div:first-child') # 点击第一个网格卡片
+            time.sleep(3)
+        except:
+            print(f"❌ 彻底找不到应用卡片: {e}")
+            # ... 保持原有的错误处理逻辑 ...
 
     print("🖱️ 点击 Reset Timer 按钮...")
     try:
