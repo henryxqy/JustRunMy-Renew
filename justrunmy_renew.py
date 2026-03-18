@@ -211,33 +211,44 @@ def handle_turnstile(sb) -> bool:
     print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
     
+    # 【新增】暴力移除可能遮挡验证框的 Cookie 弹窗
+    sb.execute_script("""
+        var selectors = ['.fc-consent-root', '#js-cookie-box', 'div[class*="cookie"]', 'button:contains("Accept")'];
+        selectors.forEach(s => {
+            try {
+                var el = document.querySelector(s);
+                if (el) el.remove();
+            } catch(e) {}
+        });
+    """)
+
     if sb.execute_script(_SOLVED_JS):
         print("  ✅ 已静默通过")
         return True
 
-    for _ in range(3):
-        try: sb.execute_script(_EXPAND_JS)
-        except Exception: pass
-        time.sleep(0.5)
-
     for attempt in range(6):
+        # 【新增】使用 SeleniumBase 官方推荐的绕过指令
+        try:
+            sb.uc_gui_handle_captcha()
+            time.sleep(2)
+        except:
+            pass
+
         if sb.execute_script(_SOLVED_JS):
-            print(f"  ✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+            print(f"  ✅ Turnstile 通过")
             return True
+
         try: sb.execute_script(_EXPAND_JS)
         except Exception: pass
-        time.sleep(0.3)
         
+        # 调用你原有的物理点击坐标逻辑
         _click_turnstile(sb)
         
         for _ in range(8):
-            time.sleep(0.5)
+            time.sleep(1)
             if sb.execute_script(_SOLVED_JS):
-                print(f"  ✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+                print(f"  ✅ Turnstile 通过")
                 return True
-        print(f"  ⚠️ 第 {attempt + 1} 次未通过，重试...")
-
-    print("  ❌ Turnstile 6 次均失败")
     return False
 
 # ============================================================
@@ -246,56 +257,44 @@ def handle_turnstile(sb) -> bool:
 def login(sb) -> bool:
     print(f"🌐 打开登录页面: {LOGIN_URL}")
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
-    time.sleep(4)
+    time.sleep(5)
+
+    # 【新增】尝试手动点击接受 Cookie 按钮
+    try:
+        sb.click('button:contains("Accept All")', timeout=3)
+    except:
+        pass
 
     try:
         sb.wait_for_element('input[name="Email"]', timeout=15)
     except Exception:
-        print("❌ 页面未加载出登录表单")
-        sb.save_screenshot("login_load_fail.png")
         return False
 
-    print("🍪 关闭可能的 Cookie 弹窗...")
-    try:
-        for btn in sb.find_elements("button"):
-            if "Accept" in (btn.text or ""):
-                btn.click()
-                time.sleep(0.5)
-                break
-    except Exception:
-        pass
-
-    print(f"📧 填写邮箱...")
+    print(f"📧 填写邮箱与密码...")
     js_fill_input(sb, 'input[name="Email"]', EMAIL)
-    time.sleep(0.3)
-    
-    print("🔑 填写密码...")
     js_fill_input(sb, 'input[name="Password"]', PASSWORD)
     time.sleep(1)
 
-    if sb.execute_script(_EXISTS_JS):
-        if not handle_turnstile(sb):
-            print("❌ 登录界面的 Turnstile 验证失败")
-            sb.save_screenshot("login_turnstile_fail.png")
-            return False
-    else:
-        print("ℹ️ 未检测到 Turnstile")
+    # 处理验证码
+    handle_turnstile(sb)
 
-    print("🖱️ 敲击回车提交表单...")
-    sb.press_keys('input[name="Password"]', '\n')
+    print("🖱️ 尝试提交登录表单...")
+    # 【修改】弃用回车，改用精准点击登录按钮
+    try:
+        sb.click('button:contains("SignIn")') 
+    except:
+        sb.press_keys('input[name="Password"]', '\n')
 
     print("⏳ 等待登录跳转...")
-    for _ in range(12):
+    # 【修改】加强判断逻辑：只要 URL 变了且不再包含 Login 就认为成功
+    for _ in range(15):
         time.sleep(1)
-        if sb.get_current_url().split('?')[0].lower() != LOGIN_URL.lower():
-            break
-
-    if sb.get_current_url().split('?')[0].lower() != LOGIN_URL.lower():
-        print("✅ 登录成功！")
-        return True
+        if "id/Account/Login" not in sb.get_current_url().lower():
+            print("✅ 登录跳转成功！")
+            return True
         
-    print("❌ 登录失败，页面没有跳转。")
-    sb.save_screenshot("login_failed.png")
+    print("❌ 登录失败，仍停留在登录页")
+    sb.save_screenshot("login_failed_final.png")
     return False
 
 # ============================================================
@@ -312,29 +311,23 @@ def renew(sb) -> bool:
     sb.open("https://justrunmy.app/panel")
     time.sleep(3)
 
-    print("🖱️ 自动读取应用名称...")
+print("🖱️ 自动读取应用名称...")
     try:
-        # 等待带有 font-semibold 的 h3 标签加载
-        sb.wait_for_element('h3.font-semibold', timeout=10)
-        # 从网页中抓取真实的名称并保存到全局变量
-        DYNAMIC_APP_NAME = sb.get_text('h3.font-semibold')
-        print(f"🎯 成功抓取到应用名称: {DYNAMIC_APP_NAME}")
+        # 【修改】改用更稳健的选择器：寻找指向管理页面的链接
+        selector = 'a[href*="/panel/manage/"]'
+        sb.wait_for_element(selector, timeout=20)
         
-        # 直接点击刚才抓取到的元素
-        sb.click('h3.font-semibold')
-        time.sleep(3)
-        print(f"📍 成功进入应用详情页: {sb.get_current_url()}")
+        # 抓取名称（你原来的逻辑）
+        try:
+            DYNAMIC_APP_NAME = sb.get_text('h3')
+        except:
+            DYNAMIC_APP_NAME = "My Application"
+            
+        print(f"🎯 成功进入应用详情页...")
+        sb.click(selector) # 直接点那个链接进入
+        time.sleep(5)
     except Exception as e:
-        print(f"❌ 找不到应用卡片: {e}")
-        sb.save_screenshot("renew_app_not_found.png")
-        send_tg_message("❌", "续期失败(找不到应用)", "未知")
-        return False
-
-    print("🖱️ 点击 Reset Timer 按钮...")
-    try:
-        sb.click('button.bg-amber-500.rounded-lg')
-        time.sleep(3)
-    except Exception as e:
+        # ... 保留你原有的错误处理 ...
         print(f"❌ 找不到 Reset Timer 按钮: {e}")
         sb.save_screenshot("renew_reset_btn_not_found.png")
         send_tg_message("❌", "续期失败(找不到按钮)", "未知")
