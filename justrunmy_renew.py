@@ -32,11 +32,7 @@ def send_tg_message(status_icon, status_text, time_left):
                       json={"chat_id": TG_CHAT_ID, "text": text}, timeout=10)
     except: pass
 
-# ============================================================
-#  底层工具：解决 JS 报错的关键
-# ============================================================
 def js_fill_input(sb, selector, text):
-    """安全地填充输入框，避免 JS 语法错误"""
     script = """
     var el = document.querySelector(arguments[0]);
     if (el) {
@@ -47,91 +43,118 @@ def js_fill_input(sb, selector, text):
     """
     sb.execute_script(script, selector, text)
 
-def _xdotool_click(x, y):
-    try: subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"], timeout=2)
-    except: pass
-
-# Turnstile 相关脚本保持原样，但采用更安全的调用方式
+# ============================================================
+#  增强版验证处理
+# ============================================================
 _SOLVED_JS = "return (function(){var i=document.querySelector('input[name=\"cf-turnstile-response\"]');return !!(i&&i.value&&i.value.length>20);})()"
 _EXISTS_JS = "return document.querySelector('input[name=\"cf-turnstile-response\"]') !== null"
 
 def handle_turnstile(sb):
     print("🔍 尝试处理 Turnstile 验证...")
-    for _ in range(10):
-        if sb.execute_script(_SOLVED_JS): return True
-        # 尝试物理点击中心位置（针对headless环境优化）
-        sb.click_active_element() 
-        time.sleep(2)
+    for i in range(15): # 增加尝试次数
+        if sb.execute_script(_SOLVED_JS):
+            print("✅ Turnstile 验证已通过")
+            return True
+        # 针对 Cloudflare 验证，有时点击验证框中心有效
+        try:
+            sb.click_active_element() 
+        except: pass
+        time.sleep(3)
+    print("⚠️ Turnstile 验证超时，尝试强制继续...")
     return False
 
 # ============================================================
 #  业务逻辑
 # ============================================================
 def login(sb):
-    print(f"🌐 打开登录页面...")
+    print(f"🌐 正在打开登录页面...")
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
-    time.sleep(5)
+    sb.save_screenshot("step1_login_page.png")
     
     try:
         sb.wait_for_element('input[name="Email"]', timeout=20)
         js_fill_input(sb, 'input[name="Email"]', EMAIL)
         js_fill_input(sb, 'input[name="Password"]', PASSWORD)
+        print("📧 表单填充完毕")
         
-        if sb.execute_script(_EXISTS_JS): handle_turnstile(sb)
+        if sb.execute_script(_EXISTS_JS):
+            handle_turnstile(sb)
         
-        sb.click('button[type="submit"]') # 改用点击提交按钮
+        sb.save_screenshot("step2_before_submit.png")
+        sb.click('button[type="submit"]')
+        print("🖱️ 点击登录按钮")
+        
+        # 增加关键等待
         time.sleep(10)
+        curr_url = sb.get_current_url()
+        print(f"📍 当前 URL: {curr_url}")
         
-        if "Login" not in sb.get_current_url():
-            print("✅ 登录成功！")
+        if "Login" not in curr_url:
+            print("✅ 登录跳转成功！")
             return True
+        else:
+            print("❌ 登录未跳转，可能验证码拦截或密码错误")
+            sb.save_screenshot("error_login_failed.png")
     except Exception as e:
-        print(f"❌ 登录过程出错: {e}")
+        print(f"❌ 登录出错: {e}")
+        sb.save_screenshot("error_login_exception.png")
     return False
 
 def renew(sb):
     global DYNAMIC_APP_NAME
-    print("\n🚀 开始续期流程")
+    print("\n🚀 开始执行续期操作...")
     sb.open("https://justrunmy.app/panel")
-    time.sleep(5)
+    time.sleep(8)
+    sb.save_screenshot("step3_panel_page.png")
 
     try:
-        # 定位应用卡片
+        # 1. 寻找应用卡片
         card = 'a[href*="/panel/manage/"]'
         sb.wait_for_element(card, timeout=20)
         DYNAMIC_APP_NAME = sb.get_text('h3').split('\n')[0].strip()
         print(f"🎯 发现应用: {DYNAMIC_APP_NAME}")
-        sb.click(card)
-        time.sleep(5)
-
-        # 点击 Reset 按钮
-        sb.click('button:contains("Reset")')
-        time.sleep(3)
-
-        if sb.execute_script(_EXISTS_JS): handle_turnstile(sb)
-
-        sb.click('button:contains("Just Reset")')
-        print("⏳ 提交中...")
-        time.sleep(10)
-
-        sb.refresh()
-        time.sleep(5)
-        timer = sb.get_text('span.font-mono')
-        print(f"⏱️ 剩余时间: {timer}")
         
-        icon = "✅" if ("2 days" in timer or "3 days" in timer) else "⚠️"
-        send_tg_message(icon, "续期结果", timer)
+        sb.click(card)
+        time.sleep(8)
+        sb.save_screenshot("step4_manage_page.png")
+
+        # 2. 点击 Reset 按钮
+        print("🖱️ 点击 Reset Timer...")
+        sb.click('button:contains("Reset")')
+        time.sleep(5)
+        sb.save_screenshot("step5_reset_modal.png")
+
+        if sb.execute_script(_EXISTS_JS):
+            handle_turnstile(sb)
+
+        # 3. 最终确认
+        print("🖱️ 点击 Just Reset...")
+        sb.click('button:contains("Just Reset")')
+        time.sleep(12) # 提交通常较慢
+
+        # 4. 验证结果
+        sb.refresh()
+        time.sleep(8)
+        timer = sb.get_text('span.font-mono')
+        print(f"⏱️ 续期后剩余时间: {timer}")
+        
+        icon = "✅" if ("2 days" in timer or "3 days" in timer or "2d" in timer) else "⚠️"
+        send_tg_message(icon, "自动续期结果", timer)
+        sb.save_screenshot("step6_final_result.png")
         return True
     except Exception as e:
         print(f"❌ 续期失败: {e}")
-        send_tg_message("❌", "续期失败", "Error")
+        sb.save_screenshot("error_renew_exception.png")
+        send_tg_message("❌", "续期失败(异常)", "Error")
     return False
 
 def main():
-    # GitHub Action 环境必须确保参数正确
+    # 注意：Action 运行通常需要 uc 模式
     with SB(uc=True, test=True, headless=False) as sb:
         if login(sb):
             renew(sb)
+        else:
+            print("❌ 登录失败，流程终止")
 
 if __name__ == "__main__":
     main()
